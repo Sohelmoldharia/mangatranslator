@@ -1318,6 +1318,11 @@ async def _run(
         tasks[task_id].update(update)
 
     except Exception as e:
+        # The full traceback goes to the console — "list index out of range"
+        # with no location once cost a whole debugging session; the message
+        # the user sees stays short, but the log names file and line.
+        import traceback
+        print(f"[run] page failed: {e}\n{traceback.format_exc()}", flush=True)
         if task_id in tasks:
             tasks[task_id].update(
                 {"status": "error", "message": str(e), "progress": 0}
