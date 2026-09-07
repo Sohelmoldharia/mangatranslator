@@ -414,6 +414,15 @@ class TextRenderer:
                 else:
                     break
             if not line:
+                # Out of words with rows still to fill: this candidate asked
+                # for more lines than the text has. Not an error — the size
+                # search simply tries fewer lines next. Reaching for
+                # pending[wi] here was the "list index out of range" that
+                # killed whole pages, and ONLY on the hyphenation retry —
+                # the plain pass returned None one branch later — which is
+                # why just the pages with stubborn tall titles died.
+                if wi >= len(pending):
+                    return None
                 if not allow_hyphen:
                     return None
                 word = pending[wi]
