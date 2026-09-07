@@ -1734,6 +1734,46 @@ _TURNS = {
 }
 
 
+@app.post("/api/topng")
+async def to_png(file: UploadFile = File(...)):
+    """Convert any image OpenCV can read into a PNG the browser can show.
+
+    Browsers do not decode TIFF (or PNM, JPEG2000, TGA...), so a scanner's
+    .tif upload used to arrive with a broken thumbnail and a dead editor.
+    The client sends such files here once, at the door; the PNG that comes
+    back is lossless, and every tool downstream sees an ordinary image.
+    """
+    import tempfile
+    suffix = os.path.splitext(file.filename or "")[1] or ".img"
+    fd, tmp = tempfile.mkstemp(suffix=suffix, dir="uploads")
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            shutil.copyfileobj(file.file, fh, 1024 * 1024)
+
+        def do_work():
+            img = cv2.imread(tmp)
+            if img is None:
+                raise ValueError("Could not read that image")
+            ok, buf = cv2.imencode(".png", img)
+            if not ok:
+                raise ValueError("Could not encode the result")
+            return buf.tobytes(), img.shape
+
+        try:
+            data, shape = await asyncio.get_event_loop().run_in_executor(
+                None, do_work)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        return Response(content=data, media_type="image/png",
+                        headers={"X-Page-Size": f"{shape[1]}x{shape[0]}",
+                                 **_NO_CACHE})
+    finally:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+
+
 @app.post("/api/turn")
 async def turn_one(file: UploadFile = File(...), kind: str = Form(...)):
     """One stateless turn, for the orientation bar's buttons.
@@ -2097,7 +2137,7 @@ async def end_card(
     return {"task_id": task_id}
 
 
-_IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+_IMG_EXT = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff")
 
 
 def _collect_page_refs(blobs):

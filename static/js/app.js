@@ -685,7 +685,8 @@ document.addEventListener("DOMContentLoaded", () => {
         } catch (e) {
           showError(`Couldn't read "${f.name}": ${e.message}`);
         }
-      } else if (f.type.startsWith("image/")) {
+      } else if (f.type.startsWith("image/")
+                 || /\.(tiff?|png|jpe?g|webp|bmp|gif|avif)$/i.test(f.name)) {
         out.push(f);
       }
     }
@@ -727,15 +728,47 @@ document.addEventListener("DOMContentLoaded", () => {
     if (el) { el.textContent = msg || ""; el.style.display = msg ? "" : "none"; }
   }
 
+  // Formats the browser decodes natively — these skip the probe entirely.
+  const BROWSER_DECODES = /\.(png|jpe?g|webp|gif|bmp|avif)$/i;
+
+  // Anything else (TIFF above all — scanners love it) is converted to a
+  // lossless PNG by the server ONCE, at the door. The backend could always
+  // read TIFF; it was the browser that couldn't, so thumbnails broke and the
+  // editor showed nothing. After this, downstream code never knows the file
+  // wasn't a PNG all along.
+  async function normalizeFile(file) {
+    if (BROWSER_DECODES.test(file.name)) return file;
+    try {
+      const bmp = await createImageBitmap(file);
+      if (bmp.close) bmp.close();
+      return file;                       // exotic name, but it decodes — fine
+    } catch (_) {}
+    try {
+      const fd = new FormData();
+      fd.append("file", file, file.name);
+      const res = await fetch("/api/topng", { method: "POST", body: fd });
+      if (!res.ok) return file;
+      const blob = await res.blob();
+      return new File([blob], file.name.replace(/\.[^.]+$/, "") + ".png",
+                      { type: "image/png" });
+    } catch (_) {
+      return file;
+    }
+  }
+
   async function addFiles(fileList) {
-    const incoming = [...fileList].filter(f => f.type.startsWith("image/"));
+    // Accept by extension as well as MIME type: Windows often hands over
+    // .tif files with an empty type, and those used to vanish silently.
+    const incoming = [...fileList].filter(f =>
+      f.type.startsWith("image/") ||
+      /\.(tiff?|png|jpe?g|webp|bmp|gif|avif)$/i.test(f.name));
     if (!incoming.length) return;
     // natural sort by filename so chapter order is preserved
     incoming.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
     const startedBatch = resultSection.style.display !== "none";
     for (let i = 0; i < incoming.length; i++) {
-      const file = incoming[i];
+      const file = await normalizeFile(incoming[i]);
       if (incoming.length > 3) {
         setUploadNote(`Preparing ${i + 1} / ${incoming.length}…`);
       }
