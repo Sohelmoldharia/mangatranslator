@@ -2036,6 +2036,23 @@ class TranslationPipeline:
         update(2, "Scanning for free text (narration / titles)...", 52)
         h, w = image.shape[:2]
         bubble_ids = [r.id for r in bubble_regions]
+        # Ask the LOCAL detector first whether there is anything to find. A
+        # page whose only text sits in its bubbles used to pay this vision
+        # call anyway — measured at 31.6s and a billed request for a Pro
+        # model to answer with one token of "nothing". CRAFT's raw character
+        # boxes decide; when CRAFT is not installed the gate abstains and
+        # the old always-ask behaviour stands, so nothing is ever lost to a
+        # weaker judgement.
+        if self.text_detector is not None:
+            try:
+                outside = self.text_detector.has_text_outside(
+                    image, [list(r.bbox) for r in bubble_regions])
+            except Exception:
+                outside = None
+            if outside is False:
+                print("[pipeline] no text outside the bubbles — skipped the "
+                      "AI free-text scan (one call saved)")
+                return []
         try:
             dets = self.translator.detect_free_text(image, self.target_lang, bubble_ids)
         except Exception as e:

@@ -12,7 +12,7 @@ The class picks CRAFT when present and falls back to CV automatically.
 
 import cv2
 import numpy as np
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 _CRAFT = None
 _TRIED = False
@@ -113,6 +113,45 @@ class FreeTextDetector:
         else:
             boxes = self._detect_cv(image, existing_boxes)
         return boxes
+
+    def has_text_outside(self, image: np.ndarray,
+                         existing_boxes) -> Optional[bool]:
+        """Is there ANY text-like stroke outside `existing_boxes`?
+
+        The cheap local question that saves the expensive remote one: a page
+        whose only text sits in its bubbles has nothing for the vision-LLM
+        free-text scan to find, and on a thinking model that empty answer
+        was measured at 31 seconds and a paid call. Judged on CRAFT's RAW
+        character boxes — deliberately not the grouped-and-filtered blocks,
+        whose size filters could drop a giant title and skip a page that
+        does have text. Returns None when CRAFT is not available, so the
+        caller abstains instead of trusting the weaker CV pass with a
+        decision that silently drops narration.
+        """
+        if not self.craft:
+            return None
+        h, w = image.shape[:2]
+        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        try:
+            from .gpu_throttle import limit as _gpu_limit
+            with _gpu_limit():
+                result = self.craft.detect_text(rgb)
+        except Exception:
+            return None
+        char_boxes = result.get("boxes")
+        if char_boxes is None or len(char_boxes) == 0:
+            return False
+        for box in char_boxes:
+            pts = np.array(box, dtype=np.float32)
+            x = max(0, int(pts[:, 0].min()))
+            y = max(0, int(pts[:, 1].min()))
+            bw = min(w, int(pts[:, 0].max())) - x
+            bh = min(h, int(pts[:, 1].max())) - y
+            if bw < 8 or bh < 8:
+                continue
+            if not any(_overlaps((x, y, bw, bh), eb) for eb in existing_boxes):
+                return True
+        return False
 
     # ── CRAFT backend ──
     def _detect_craft(self, image, existing_boxes):
