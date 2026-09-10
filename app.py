@@ -1524,6 +1524,12 @@ async def _run_enhance(
             }
         )
     except Exception as e:
+        # Same rule as the translate runner: the console gets the full
+        # traceback, the user gets the short message — a scan that "gets
+        # stuck" with no location is undebuggable.
+        import traceback
+        print(f"[enhance] page failed: {e}\n{traceback.format_exc()}",
+              flush=True)
         if task_id in tasks:
             tasks[task_id].update(
                 {"status": "error", "message": str(e), "progress": 0}

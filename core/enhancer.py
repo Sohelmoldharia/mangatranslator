@@ -363,6 +363,16 @@ class ImageEnhancer:
         h, w = image.shape[:2]
         max_dim = 2048
         if max(h, w) > max_dim:
+            # The provider tops out around 2.3K whatever it is sent. A page
+            # BIGGER than that going in means the scan comes back at a
+            # fraction of the input's resolution — a downgrade that looks
+            # like "the AI did nothing". Say it loudly: the right order is
+            # scan FIRST, HD upscale AFTER (the AI Scan → HD card).
+            if max(h, w) > 4000:
+                print(f"[enhance] ⚠ input is {w}x{h} but Grok returns ~2.3K "
+                      f"at most — this page will come back at a fraction of "
+                      f"its resolution. Scan first, upscale after "
+                      f"(AI Scan → HD).", flush=True)
             scale = max_dim / max(h, w)
             image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
         # PNG (lossless) so line art / screentones aren't softened by JPEG before
@@ -382,8 +392,13 @@ class ImageEnhancer:
         }
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
+        # Log what is actually SENT (post-cap), with the original alongside —
+        # the old line printed only the original, and "input=8525x6269" made
+        # a capped 2048px upload look like an eight-thousand-pixel one.
+        sh_, sw_ = image.shape[:2]
         print(f"[enhance] xAI request: POST {self.XAI_URL} | model={model} | "
-              f"input={w}x{h} | resolution=2k | prompt[:80]={prompt[:80]!r}")
+              f"sending {sw_}x{sh_} (source {w}x{h}) | resolution=2k | "
+              f"prompt[:80]={prompt[:80]!r}")
         with httpx.Client(timeout=self.timeout) as client:
             resp = _post_with_retry(client, self.XAI_URL, headers=headers, json=body)
             if resp.status_code == 422 and "resolution" in resp.text.lower():
@@ -410,15 +425,43 @@ class ImageEnhancer:
             if first.get("b64_json"):
                 outimg = self._decode(base64.b64decode(first["b64_json"]))
                 print(f"[enhance] xAI returned image {outimg.shape[1]}x{outimg.shape[0]}")
-                return outimg
+                return self._restore_aspect(outimg, image)
             if first.get("url"):
                 with httpx.Client(timeout=self.timeout) as client:
                     img_resp = client.get(first["url"])
                 if img_resp.status_code == 200:
                     outimg = self._decode(img_resp.content)
                     print(f"[enhance] xAI returned image {outimg.shape[1]}x{outimg.shape[0]} (via url)")
-                    return outimg
+                    return self._restore_aspect(outimg, image)
         raise RuntimeError(f"xAI returned no image: {str(payload)[:300]}")
+
+    @staticmethod
+    def _restore_aspect(out: np.ndarray, sent: np.ndarray) -> np.ndarray:
+        """Undo the provider's size-grid stretch.
+
+        Grok snaps its output onto its own resolution grid: a 1.18:1 page was
+        measured coming back 1.37:1 — the artwork itself stretched 16% and
+        kept that way, faces and panels subtly (or not so subtly) wrong. The
+        tile path has always resized each tile back to its true region; the
+        whole-page path now gets the same correction, at the returned pixel
+        budget so no resolution is thrown away."""
+        sh, sw = sent.shape[:2]
+        oh, ow = out.shape[:2]
+        if not (sh and sw and oh and ow):
+            return out
+        want = sw / sh
+        got = ow / oh
+        if abs(got - want) / want <= 0.01:
+            return out
+        if got > want:
+            tw, th = max(1, int(round(oh * want))), oh
+        else:
+            tw, th = ow, max(1, int(round(ow / want)))
+        interp = cv2.INTER_AREA if tw * th < ow * oh else cv2.INTER_CUBIC
+        fixed = cv2.resize(out, (tw, th), interpolation=interp)
+        print(f"[enhance] provider aspect {got:.3f} != page {want:.3f} — "
+              f"restored to {tw}x{th}")
+        return fixed
 
     def _err(self, name: str, resp: httpx.Response) -> str:
         try:
