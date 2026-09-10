@@ -1341,6 +1341,7 @@ async def enhance_only(
     upscale: str = Form("false"),
     tiles: str = Form("1"),
     protect_dark: str = Form("false"),
+    compress: str = Form("false"),
     gpu_cap: str = Form("100"),
     watermark: str = Form(""), wm_place: str = Form("br"),
     wm_opacity: str = Form("50"), wm_size: str = Form("m"),
@@ -1384,6 +1385,7 @@ async def enhance_only(
         _run_enhance(task_id, upload_path, output_path, provider, api_key, prompt,
                      model, upscale=(upscale == "true"), tiles=n_tiles,
                      protect_dark=(protect_dark == "true"),
+                     compress=(compress == "true"),
                      wm=dict(watermark=watermark.strip(),
                              wm_place=wm_place.strip() or "br",
                              wm_opacity=int(wm_opacity) if str(wm_opacity).strip().isdigit() else 50,
@@ -1406,6 +1408,7 @@ async def _run_enhance(
     tiles: int = 1,
     protect_dark: bool = False,
     wm: dict = None,
+    compress: bool = False,
 ):
     try:
         tasks[task_id].update(
@@ -1490,19 +1493,36 @@ async def _run_enhance(
                         out = protect_dark_panels(out, img)
                     except Exception as e:
                         print(f"[enhance] dark-panel guard skipped: {e}")
-            # HD upscale (MangaJaNai) ONLY when the toggle is on — off by default.
-            if upscale:
+            # One upscaler pass, to the larger of two goals:
+            #   - the HD toggle's 3600px, when it is on;
+            #   - BIG IN, BIG OUT: the provider tops out ~2.3K, so a big
+            #     source used to come back at a fraction of its own size —
+            #     a paid call that read as a downgrade. The scan is rebuilt
+            #     to the SOURCE's size with MangaJaNai (real detail, not
+            #     interpolation) unless the user picked Compress Output,
+            #     which is the explicit "small is fine".
+            target = 3600 if upscale else 0
+            src_long = int(max(img.shape[:2]))
+            if ai_ok and not compress and src_long > max(out.shape[:2]) + 64:
+                target = max(target, src_long)
+            if target > max(out.shape[:2]):
                 tasks[task_id].update({"progress": 85,
-                                       "message": "Upscaling to HD (MangaJaNai)..."})
+                                       "message": f"Rebuilding to {target}px "
+                                                  "(MangaJaNai)..."})
                 try:
                     from core.upscale import Upscaler
                     up = Upscaler()
                     if up.ok:
-                        out = up.upscale(out, target_long=3600)
+                        out = up.upscale(out, target_long=target)
+                        print(f"[enhance] rebuilt to "
+                              f"{out.shape[1]}x{out.shape[0]} "
+                              f"(source {img.shape[1]}x{img.shape[0]})")
                     else:
-                        print("[enhance] HD upscale requested but no model installed")
+                        print("[enhance] upscale wanted but no model "
+                              "installed — run ./setup_gpu.sh --mangajanai "
+                              "for big-in big-out")
                 except Exception as e:
-                    print(f"[enhance] HD upscale step failed: {e}")
+                    print(f"[enhance] upscale step failed: {e}")
             cv2.imwrite(output_path, out)
 
         loop = asyncio.get_event_loop()

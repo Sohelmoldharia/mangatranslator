@@ -1947,6 +1947,9 @@ document.addEventListener("DOMContentLoaded", () => {
     if (workflow === "scan-upscale" || (hdUpscale && hdUpscale.checked)) {
       f.append("upscale", "true");
     }
+    // Big in, big out: with this unchecked, a scan of a big page is rebuilt
+    // to the page's own size afterwards. Checked = "small is fine".
+    f.append("compress", compressOut && compressOut.checked ? "true" : "false");
     appendWm(f);
     return { url: "/api/enhance", form: f };
   }
