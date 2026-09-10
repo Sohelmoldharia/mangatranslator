@@ -1620,24 +1620,66 @@ async def _run_local_clean(task_id: str, image_path: str, output_path: str,
         note = []
 
         def do_work():
+            import time as _t
             img = cv2.imread(image_path)
             if img is None:
                 raise ValueError(f"Cannot load image: {image_path}")
+            src_h, src_w = img.shape[:2]
+            src_long = max(src_h, src_w)
+            print(f"[localclean] page {src_w}x{src_h}", flush=True)
+            # The arithmetic clean runs at a BOUNDED size. Its denoise is
+            # NLM, and NLM on a 60-megapixel pre-upscaled page was measured
+            # disappearing for ten-plus silent minutes of CPU — the "stuck
+            # no matter what I do". Clean at a sane size, then rebuild to
+            # the source's own size below (big in, big out): same output
+            # dimensions, minutes cheaper, and MangaJaNai's rebuild puts
+            # back more real detail than NLM-at-60MP ever preserved.
+            WORK_CAP = 4096
+            work = img
+            if src_long > WORK_CAP:
+                s = WORK_CAP / src_long
+                work = cv2.resize(img, (max(1, round(src_w * s)),
+                                        max(1, round(src_h * s))),
+                                  interpolation=cv2.INTER_AREA)
+                print(f"[localclean] cleaning at {work.shape[1]}x"
+                      f"{work.shape[0]} (capped from {src_w}x{src_h}; "
+                      f"the result is rebuilt to full size after)",
+                      flush=True)
             tasks[task_id].update({"step": 1, "progress": 25,
                                    "message": "Cleaning (pitch-black recipe — "
                                               "picked in the Clean Lab)..."})
-            out = clean_page_nokey(img)
-            if hd:
+            t0 = _t.time()
+            out = clean_page_nokey(work)
+            print(f"[localclean] clean pass done in {_t.time() - t0:.1f}s",
+                  flush=True)
+            # One upscaler pass, to the larger of two goals: the HD flag's
+            # 3600px, and big-in-big-out back to the source's long side
+            # (skipped when Compress Output says small is fine).
+            target = 3600 if hd else 0
+            if not compress and src_long > max(out.shape[:2]):
+                target = max(target, src_long)
+            if target > max(out.shape[:2]):
                 try:
                     from core.upscale import Upscaler
                     up = Upscaler()
                     if up.ok:
                         tasks[task_id].update(
                             {"progress": 55,
-                             "message": "Rebuilding line work on the GPU "
-                                        "(MangaJaNai)..."})
-                        out = up.upscale(out, target_long=3600)
+                             "message": f"Rebuilding to {target}px on the "
+                                        "GPU (MangaJaNai)..."})
+                        t0 = _t.time()
+                        out = up.upscale(out, target_long=target)
+                        print(f"[localclean] rebuilt to {out.shape[1]}x"
+                              f"{out.shape[0]} in {_t.time() - t0:.1f}s",
+                              flush=True)
                     else:
+                        if not compress and src_long > max(out.shape[:2]):
+                            # Size parity still honoured, just without the
+                            # model's rebuilt detail.
+                            k = src_long / max(out.shape[:2])
+                            out = cv2.resize(out, (max(1, round(out.shape[1] * k)),
+                                                   max(1, round(out.shape[0] * k))),
+                                             interpolation=cv2.INTER_CUBIC)
                         note.append("no HD model installed — run "
                                     "./setup_gpu.sh --mangajanai for sharper "
                                     "line work")
