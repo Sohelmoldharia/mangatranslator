@@ -30,7 +30,12 @@ class TextRenderer:
         self.uppercase = uppercase
         self.min_font_size = 8   # lower floor so long text shrinks to fit small boxes
         self.padding_ratio = max(0.0, 0.04 / self.font_scale)
-        self.line_spacing_ratio = max(0.04, 0.12 / self.font_scale)
+        # Leading between lines. Comic lettering breathes — the official
+        # release sets noticeably more air between rows than a tight 0.12 gave
+        # (our stacked lines read cramped beside it). 0.24 matches it without
+        # pushing short text onto extra rows, because the line-count chooser
+        # now keeps FEWER lines unless more are clearly bigger.
+        self.line_spacing_ratio = max(0.04, 0.24 / self.font_scale)
         self._font_cache: Dict[tuple, ImageFont.FreeTypeFont] = {}
         self._cov_cache: Dict[str, Optional[set]] = {}
         self._active_font_path: Optional[str] = None
@@ -505,7 +510,13 @@ class TextRenderer:
                     if not g:
                         break
                     lines, lh = g
-                if best is None or size > best[0]:
+                # Prefer FEWER lines strongly. A letterer breaks "YOU CAN'T
+                # ESCAPE..." into two natural lines even though cramming three
+                # narrow ones would be a bit bigger — fewer lines read as
+                # speech, more read as a stack. `best` is built low-n first,
+                # so a higher n only wins if it is MUCH bigger (the case where
+                # fewer lines would be genuinely tiny), not merely a little.
+                if best is None or size > best[0] * 1.35:
                     best = (size, lines, lh)
             return best
 
@@ -544,10 +555,13 @@ class TextRenderer:
             return False
         size, lines, lh = got
 
-        # SAFETY NET: if the shape gains us nothing over the rectangle, don't
-        # use it. The first version of this feature shipped layouts that were
-        # smaller AND uglier than what it replaced.
-        if size <= baseline_size:
+        # SAFETY NET: only skip the shape when it is STRICTLY smaller than the
+        # rectangle. On a tie the shaped layout still wins, because it wraps to
+        # the balloon's true width — the rectangle is the narrow inscribed one,
+        # so at the same size it breaks into more, cramped lines ("YOU" /
+        # "CAN'T" / "ESCAPE..." where the balloon holds "YOU CAN'T" /
+        # "ESCAPE..."). Was `<=`, which handed those ties to the worse layout.
+        if size < baseline_size:
             return False
 
         size = max(self.min_font_size, int(round(size * self._size_scale)))
