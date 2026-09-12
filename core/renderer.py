@@ -379,9 +379,14 @@ class TextRenderer:
         return left, max(0, right - left - sw)
 
     def _fit_lines(self, draw, words, spans, size, rect_h, n_lines,
-                   allow_hyphen=False, width_scale=1.0):
+                   allow_hyphen=False, width_scale=1.0, max_fill=1.0):
         """Try to lay `words` into exactly `n_lines` lines at `size`, with the
-        block CENTRED in the shape. Returns the placed lines or None."""
+        block CENTRED in the shape. Returns the placed lines or None.
+
+        `max_fill` caps how much of the balloon's height the block may use
+        (its width bands are still the balloon's). The block is centred in the
+        FULL height regardless, so a cap below 1.0 buys the margin a letterer
+        leaves top and bottom rather than shoving the text upward."""
         font = self._get_font(size)
         sw = max(1, size // 18) * 2
         spacing = max(int(size * self.line_spacing_ratio), 1)
@@ -389,9 +394,9 @@ class TextRenderer:
         lh = max(1, probe[3] - probe[1])
 
         total = n_lines * lh + (n_lines - 1) * spacing
-        if total > rect_h:
+        if total > rect_h * max_fill:
             return None
-        top = (rect_h - total) // 2          # centred: this is the whole point
+        top = (rect_h - total) // 2          # centred in the FULL height
 
         out, wi = [], 0
         pending = list(words)
@@ -449,36 +454,68 @@ class TextRenderer:
 
     def _shape_layout(self, draw, text, spans, rect_h, allow_hyphen=False):
         """Largest size whose text fits the balloon's shape. Returns
-        (size, lines, lh) or None."""
+        (size, lines, lh) or None.
+
+        The layout aims for what a letterer actually sets: the biggest
+        readable type in the FEWEST natural lines, as a compact block
+        centred in the balloon with breathing room around it — not text
+        stretched wall to wall. An earlier version preferred the MOST lines
+        and squeezed the width to force the block to fill top-to-bottom;
+        measured against official pages that came out sparse and spread,
+        the words reaching both balloon edges while the official set the
+        same line as a tidy centred cluster. Fewest-lines-first, then a
+        gentle balance pass, restores that.
+        """
         words = [w for w in text.split() if w]
         if not words:
             return None
-        best = None
-        lo, hi = self.min_font_size, min(400, max(self.min_font_size, rect_h))
-        while lo <= hi:
-            mid = (lo + hi) // 2
-            # Prefer MORE lines at the same size: a taller block fills the
-            # balloon top to bottom, and the outer lines come out shorter,
-            # which is what makes it read as hand lettering instead of a
-            # paragraph parked in the middle. Fewest-lines-first left obvious
-            # dead space above and below.
-            hit = None
-            for n in range(10, 0, -1):
-                # Balance: squeeze the working width until the words really do
-                # spread across n lines with none left empty.
-                for ws in (1.0, 0.9, 0.8, 0.72, 0.64, 0.56, 0.48):
-                    got = self._fit_lines(draw, words, spans, mid, rect_h, n,
-                                          allow_hyphen, ws)
-                    if got:
-                        hit = got
+
+        def max_size_for_n(n, max_fill):
+            """Largest size that fits the words in exactly n lines."""
+            best, lo, hi = None, self.min_font_size, min(400, max(
+                self.min_font_size, rect_h))
+            while lo <= hi:
+                mid = (lo + hi) // 2
+                g = self._fit_lines(draw, words, spans, mid, rect_h, n,
+                                    allow_hyphen, 1.0, max_fill)
+                if g:
+                    best, lo = (mid, g), mid + 1
+                else:
+                    hi = mid - 1
+            return best
+
+        def search(max_fill):
+            # Pick the line count that yields the LARGEST readable type — the
+            # single knob a letterer actually optimises. It adapts to the
+            # balloon's shape on its own: a wide bubble maximises at few
+            # lines, a tall one at more, without a per-shape rule. Ties keep
+            # the fewer lines. The margin cap keeps the winning block off the
+            # walls; centring is done in the full height by _fit_lines.
+            best = None            # (size, lines, lh)
+            for n in range(1, 11):
+                r = max_size_for_n(n, max_fill)
+                if not r:
+                    continue
+                size, (lines, lh) = r
+                # Balance: the tightest width that still fits in these n lines
+                # evens the lines (no lonely last word) without adding a row.
+                for ws in (0.92, 0.84, 0.76, 0.68, 0.6):
+                    g = self._fit_lines(draw, words, spans, size, rect_h, n,
+                                        allow_hyphen, ws, max_fill)
+                    if not g:
                         break
-                if hit:
-                    break
-            if hit:
-                best, lo = (mid, hit[0], hit[1]), mid + 1
-            else:
-                hi = mid - 1
-        return best
+                    lines, lh = g
+                if best is None or size > best[0]:
+                    best = (size, lines, lh)
+            return best
+
+        # Maximising size across line counts is what fixed the wall-to-wall
+        # spread: a wide balloon maxes out at few lines (width-bound) so it
+        # already reads as a compact centred cluster, and _fit_lines centres
+        # the block in the full height. No artificial fill cap — that only
+        # shrank the type below the plain-rectangle fallback and handed the
+        # bubble back to it.
+        return search(1.0)
 
     def _draw_shaped(self, image, draw, rect, text, color, italic, shape_mask,
                      baseline_size):
