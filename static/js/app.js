@@ -2269,12 +2269,7 @@ document.addEventListener("DOMContentLoaded", () => {
     el.innerHTML = "";
     // Per-bubble font picker options: every installed font (the main Font
     // dropdown already lists them), with "Auto" meaning the mood system /
-    // page font decide as usual.
-    const fontOpts = cur => ['<option value="">Auto font</option>']
-      .concat([...(fontSelect ? fontSelect.options : [])]
-        .filter(o => o.value)
-        .map(o => `<option value="${esc(o.value)}"${o.value === cur ? " selected" : ""}>${esc(o.textContent)}</option>`))
-      .join("");
+    // page font decide as usual. (Shared with the Edit popover via fontOpts.)
     let items = page.items || [];
     if (items.length === 0 && page.result && page.result.result && page.result.result.translations) {
       items = Object.entries(page.result.result.translations).map(([id, t]) => ({
@@ -3265,6 +3260,10 @@ document.addEventListener("DOMContentLoaded", () => {
                style="flex:1" title="Drag to grow/shrink this text — live preview on the page">
         <span class="epop-fs-val" style="min-width:34px;text-align:right"></span>
       </div>
+      <div class="edit-pop-color">
+        <span class="epop-clabel">Font</span>
+        <select class="epop-font" style="flex:1" title="Font for THIS bubble only — your pick beats the mood system and the page font. 'Auto font' lets them decide.">${fontOpts((page.fonts || {})[it.id] || "")}</select>
+      </div>
       <div class="edit-pop-row">
         <button class="btn btn-ghost btn-sm epop-remove">${isAdded ? "Delete" : "Skip"}</button>
         <button class="btn btn-ghost btn-sm epop-ime" title="Retype the ORIGINAL text with the built-in Japanese/Korean keyboard and re-translate it — for a bubble the reader got wrong">あ Retype</button>
@@ -3336,6 +3335,15 @@ document.addEventListener("DOMContentLoaded", () => {
         else page.fontScales[it.id] = fv;
         const span = document.querySelector('.tl-fsv[data-id="' + it.id + '"]');
         if (span) span.textContent = Math.round(fv * 100) + "%";
+      }
+      const fontSave = pop.querySelector(".epop-font");
+      if (fontSave) {
+        page.fonts = page.fonts || {};
+        if (fontSave.value) page.fonts[it.id] = fontSave.value;
+        else delete page.fonts[it.id];
+        // Keep the Details-tab dropdown for this bubble in step.
+        const sel = document.querySelector('.tl-font[data-id="' + it.id + '"]');
+        if (sel) sel.value = fontSave.value;
       }
       const f = document.querySelector('.tl-edit[data-id="' + it.id + '"]');
       if (f) f.value = ta.value;
@@ -4863,5 +4871,16 @@ document.addEventListener("DOMContentLoaded", () => {
     return (b / 1048576).toFixed(1) + " MB";
   }
   function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+
+  // <option> list of every installed font, "Auto font" first (mood system /
+  // page font decides). Shared by the Details-tab rows and the Edit popover
+  // so a per-bubble font pick is offered in both places, from one source.
+  function fontOpts(cur) {
+    return ['<option value="">Auto font</option>']
+      .concat([...(fontSelect ? fontSelect.options : [])]
+        .filter(o => o.value)
+        .map(o => `<option value="${esc(o.value)}"${o.value === cur ? " selected" : ""}>${esc(o.textContent)}</option>`))
+      .join("");
+  }
 
 });
